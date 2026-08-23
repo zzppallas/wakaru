@@ -1,5 +1,6 @@
 pub mod amd;
 pub mod browserify;
+pub mod chunk_enumeration;
 pub mod closure_module_manager;
 pub(crate) mod emit_esm;
 pub mod esbuild;
@@ -573,6 +574,16 @@ pub struct UnpackResult {
     pub format: BundleFormat,
 }
 
+/// Current result of the internal chunk-enumeration inspection path.
+///
+/// This is exposed from `wakaru-core` only for the hidden CLI command. The
+/// implementation crate is not a supported integration surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkEnumerationReport {
+    pub detected_format: Option<BundleFormat>,
+    pub enumeration: Option<chunk_enumeration::ChunkEnumeration>,
+}
+
 /// Detector-owned AST that has completed bundler-specific normalization.
 ///
 /// This is private to the core pipeline. Public/raw unpack APIs materialize it
@@ -623,6 +634,10 @@ pub(crate) struct DetectedBundle {
     /// a bare `.i` in a modern chunk must not be guessed from the table key.
     pub(crate) webpack_legacy_module_i: crate::collections::HashSet<String>,
     pub(crate) chunk_ids: crate::collections::HashSet<usize>,
+    /// Statically extracted webpack chunk-reference surface, when one was
+    /// found. Populated only for the dedicated debug inspection path and
+    /// never consumed by module recovery.
+    pub(crate) chunk_enumeration: Option<chunk_enumeration::ChunkEnumeration>,
     pub(crate) input_has_esm_declarations: bool,
     materialize_cm: Option<Lrc<SourceMap>>,
 }
@@ -639,6 +654,7 @@ impl DetectedBundle {
             webpack_numeric_module_ids: Default::default(),
             webpack_legacy_module_i: Default::default(),
             chunk_ids: Default::default(),
+            chunk_enumeration: None,
             input_has_esm_declarations: false,
             materialize_cm: None,
         }
@@ -661,6 +677,7 @@ impl DetectedBundle {
             webpack_numeric_module_ids: Default::default(),
             webpack_legacy_module_i: Default::default(),
             chunk_ids: Default::default(),
+            chunk_enumeration: None,
             input_has_esm_declarations: false,
             materialize_cm: Some(materialize_cm),
         }
@@ -882,7 +899,7 @@ pub(crate) fn try_prepare_bundle(source: &str) -> anyhow::Result<Option<Detected
         if !recoverable_parse_errors.is_empty() || has_strict_mode_syntax_hazard(&module) {
             return Ok(None);
         }
-        Ok(detect_parsed_source(&mut module, cm, source))
+        Ok(detect_parsed_source(&mut module, cm, source, false))
     })
 }
 
@@ -892,7 +909,7 @@ pub(crate) fn try_prepare_source(
     prepare_plain_ast: bool,
 ) -> anyhow::Result<PreparedSource> {
     enum PreparedSourceParts {
-        Bundle(DetectedBundle),
+        Bundle(Box<DetectedBundle>),
         Plain {
             module: Module,
             unresolved_mark: Mark,
@@ -911,8 +928,8 @@ pub(crate) fn try_prepare_source(
         };
 
         if recoverable_parse_errors.is_empty() && !has_strict_mode_syntax_hazard(&module) {
-            if let Some(result) = detect_parsed_source(&mut module, cm, source) {
-                return Ok(PreparedSourceParts::Bundle(result));
+            if let Some(result) = detect_parsed_source(&mut module, cm, source, false) {
+                return Ok(PreparedSourceParts::Bundle(Box::new(result)));
             }
         }
 
@@ -935,8 +952,8 @@ pub(crate) fn try_prepare_source(
         }
     })?;
 
-    Ok(match prepared {
-        PreparedSourceParts::Bundle(bundle) => PreparedSource::Bundle(bundle),
+    let source = match prepared {
+        PreparedSourceParts::Bundle(bundle) => PreparedSource::Bundle(*bundle),
         PreparedSourceParts::Plain {
             module,
             unresolved_mark,
@@ -948,13 +965,15 @@ pub(crate) fn try_prepare_source(
             recoverable_parse_errors,
         })),
         PreparedSourceParts::PlainUnprepared => PreparedSource::Plain(None),
-    })
+    };
+    Ok(source)
 }
 
 fn detect_parsed_source(
     module: &mut Module,
     cm: Lrc<SourceMap>,
     source: &str,
+    collect_chunk_enumeration: bool,
 ) -> Option<DetectedBundle> {
     let input_has_esm_declarations = module
         .body
@@ -964,6 +983,14 @@ fn detect_parsed_source(
     if let Some(mut result) = detect_bundle_candidate(module, cm.clone(), source, true) {
         result.chunk_ids = chunk_ids;
         result.input_has_esm_declarations = input_has_esm_declarations;
+        if collect_chunk_enumeration {
+            let unresolved_mark = resolve_chunk_enumeration_module(module);
+            result.chunk_enumeration = chunk_enumeration::extract_chunk_enumeration(
+                module,
+                result.result.format,
+                unresolved_mark,
+            );
+        }
         return Some(result);
     }
 
@@ -976,10 +1003,18 @@ fn detect_parsed_source(
     }
 
     let unwrapped_candidates = wrappers::collect_unwrap_candidates(module);
-    for candidate in &unwrapped_candidates {
-        if let Some(mut result) = detect_bundle_candidate(candidate, cm.clone(), source, false) {
+    for mut candidate in unwrapped_candidates {
+        if let Some(mut result) = detect_bundle_candidate(&candidate, cm.clone(), source, false) {
             result.chunk_ids = chunk_ids;
             result.input_has_esm_declarations = input_has_esm_declarations;
+            if collect_chunk_enumeration {
+                let unresolved_mark = resolve_chunk_enumeration_module(&mut candidate);
+                result.chunk_enumeration = chunk_enumeration::extract_chunk_enumeration(
+                    &candidate,
+                    result.result.format,
+                    unresolved_mark,
+                );
+            }
             return Some(result);
         }
     }
@@ -995,6 +1030,13 @@ fn detect_parsed_source(
         detected.input_has_esm_declarations = input_has_esm_declarations;
         detected
     })
+}
+
+fn resolve_chunk_enumeration_module(module: &mut Module) -> Mark {
+    let unresolved_mark = Mark::new();
+    let top_level_mark = Mark::new();
+    module.visit_mut_with(&mut resolver(unresolved_mark, top_level_mark, false));
+    unresolved_mark
 }
 
 fn detect_bundle_candidate(
@@ -1140,6 +1182,46 @@ pub(crate) fn parse_es_module(
     cm: Lrc<SourceMap>,
 ) -> anyhow::Result<Module> {
     parse_es_module_with_recovery(source, filename, cm).map(|(module, _)| module)
+}
+
+/// Inspect one JavaScript input for statically enumerable chunk references.
+///
+/// This performs parsing and structural bundle detection, but does not
+/// materialize extracted modules or run the decompiler pipeline. It is the
+/// internal engine for `wakaru debug enumerate-chunks`.
+pub fn enumerate_chunks(source: &str, filename: &str) -> anyhow::Result<ChunkEnumerationReport> {
+    let globals = Globals::new();
+    GLOBALS.set(&globals, || {
+        let cm: Lrc<SourceMap> = Default::default();
+        let (mut module, _) = parse_es_module_with_recovery(source, filename, cm.clone())?;
+        let relative_imports = chunk_enumeration::collect_relative_import_specifiers(&module);
+        let mut detected = detect_parsed_source(&mut module, cm, source, true);
+        let detected_format = detected.as_ref().map(|detected| detected.result.format);
+        let webpack = detected
+            .as_mut()
+            .and_then(|detected| detected.chunk_enumeration.take());
+        Ok(ChunkEnumerationReport {
+            detected_format,
+            enumeration: chunk_enumeration::merge(webpack, relative_imports),
+        })
+    })
+}
+
+/// Parse a source and run chunk-enumeration extraction as the given detected
+/// format, bypassing bundle detection. Integration-test support only —
+/// debug-command callers should use [`enumerate_chunks`] so detection remains
+/// part of the exercised path.
+pub fn extract_chunk_enumeration_from_source(
+    source: &str,
+    format: BundleFormat,
+) -> Option<chunk_enumeration::ChunkEnumeration> {
+    let globals = Globals::new();
+    GLOBALS.set(&globals, || {
+        let cm: Lrc<SourceMap> = Default::default();
+        let (mut module, _) = parse_es_module_with_recovery(source, "test.js", cm).ok()?;
+        let unresolved_mark = resolve_chunk_enumeration_module(&mut module);
+        chunk_enumeration::extract_chunk_enumeration(&module, format, unresolved_mark)
+    })
 }
 
 fn parse_es_module_with_recovery(

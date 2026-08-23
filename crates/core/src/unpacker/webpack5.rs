@@ -2706,7 +2706,7 @@ fn static_member_property_name(prop: &MemberProp) -> Option<&str> {
 /// Stable property names assigned by webpack's built-in runtime modules.
 /// This is intentionally positive: an unknown property may be authored by the
 /// entry through webpack's public raw-require variable and must be preserved.
-fn is_webpack_runtime_property(property: &str) -> bool {
+pub(crate) fn is_webpack_runtime_property(property: &str) -> bool {
     matches!(
         property,
         "amdD"
