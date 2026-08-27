@@ -124,26 +124,11 @@ tooling.
 ```bash
 wakaru input.js --diagnostics              # post-transform checks to stderr
 wakaru input.js --profile trace.json       # Chrome trace; add --profile-rules for per-rule spans
-wakaru debug validate out/                 # validate an unpacked output tree as one module graph
-wakaru debug validate out/ --input bundle.js  # also report free identifiers that the input never left free
 ```
 
 With `--diagnostics`, conflicting emitted declarations (including `var` versus
 `let` or `const` across nested blocks) produce error-class warnings and a nonzero
 exit. Legal repeated `var` declarations and inner-scope shadowing are allowed.
-
-`debug validate` reports dangling references, broken imports/exports,
-duplicate declarations, writes to imported or `const` bindings, and free
-identifiers that exactly one other module declares at module scope. With
-`--input`, it also reports free identifiers that are not free anywhere in the
-original bundle. It exits nonzero when it finds anything. Validate normal
-output only: raw output has no module-graph contract.
-
-Const/import-write findings are static: an unreachable or short-circuited
-assignment still produces a finding, and caught exceptions are not excluded.
-They do not prove a load failure or a Wakaru regression. `--input` compares
-free identifiers only; it does not suppress const/import writes already in
-the input.
 
 ## Overwrite protection
 

@@ -4,7 +4,8 @@ This document collects workflow notes for investigating rule and snapshot regres
 
 See also: [Testing](testing.md) for test helpers and patterns,
 [Rule dependency inventory](rule-dependency-inventory.md) for pipeline ordering
-and confirmed dependency chains.
+and confirmed dependency chains, and [Debug and experimental CLI](cli-debug.md)
+for the current `wakaru debug` interfaces and their compatibility policy.
 
 ## Quick Reference
 
@@ -29,6 +30,9 @@ cargo run --profile dev-release -p wakaru-core --example name_capture_oracle -- 
 ```
 
 ## Rule Trace
+
+The command signature and compatibility status are documented in
+[cli-debug.md](cli-debug.md#debug-trace).
 
 Use the rule trace CLI before manually bisecting with `apply_rules()` and
 `RulePipelineOptions::between(...)`.
@@ -63,6 +67,9 @@ the unpack pipeline may remove unused imports that Wakaru recovered from bundle
 edges.
 
 ## Validating Unpacked Output
+
+The command signature, current output formats, and exit behavior are documented
+in [cli-debug.md](cli-debug.md#debug-validate).
 
 `debug validate` checks a directory of emitted modules as one graph and
 reports structural findings that can indicate load-time or runtime failures:

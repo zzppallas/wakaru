@@ -275,64 +275,6 @@ nested blocks. These are error-class `duplicate_declaration` warnings and make
 the command exit nonzero. Repeated `var` declarations and legal inner-scope
 shadowing do not count as conflicts.
 
-For development and benchmark triage, validate a normal unpack output tree as
-one emitted-module graph:
-
-```bash
-wakaru debug validate out/
-wakaru debug validate out/ --json
-wakaru debug validate out/ --input bundle.js   # also compare free identifiers against the input
-```
-
-The validator reports dangling relative references, imports or re-exports of
-missing or star-ambiguous names, local export clauses that name no declared
-binding, duplicate exports or conflicting declarations (including nested
-block, switch, loop, function-parameter/body, and catch-parameter scopes), and
-writes to imported or `const` bindings. It also reports unresolved `module` /
-`exports` runtime uses left in ESM; direct safe `typeof` probes are excluded.
-`.mjs` / `.mts` files and in-tree static or dynamic import targets use the
-module source goal even when they contain no import/export declaration
-themselves; explicit `.cjs` / `.cts` files retain the script/CommonJS source
-goal even when imported by ESM.
-
-Const/import-write findings use resolved binding identity, but do not analyze
-reachability, logical-assignment short circuits, or caught exceptions. They
-can therefore occur in code that loads and executes successfully. A finding
-also does not establish that Wakaru introduced the write: `--input` compares
-free identifiers only and does not suppress pre-existing const/import writes.
-
-Free identifiers are reported as `unresolved_reference` only when the graph
-proves them wrong. Without `--input`, that proof is structural: exactly one
-other emitted module declares the same name at module scope, which is the
-shape a split leaves behind when it separates a declaration from its users
-without adding the import/export edge. Names declared by several modules are
-ambiguous reused locals and stay silent. With `--input PATH` (a file or a
-directory, repeatable), the original bundle is parsed too, and any free
-identifier in the output that is free nowhere in the input is reported as
-well: host globals, build-time define constants, `typeof` probes, and
-dependency bugs that the input already contains are excused, while a name the
-rewrite pipeline or the splitter left undeclared is not. Input evidence is
-authoritative: a name the input uses freely is never reported, even when the
-structural proof would match it (same spelling is not binding identity). If
-any input fails to parse, the input comparison is skipped rather than run on
-a partial baseline. ECMAScript built-ins,
-module-runtime names (`require`, `define`, `global`, ...), and, for the
-structural proof only, well-known host globals that shim modules declare are
-never reported. Other writes to undeclared identifiers (host globals) are not
-reported: without an input or a sibling declaration there is no environment
-model to judge them against. An input that fails to parse is reported as a
-`parse_error` on the input filename.
-Human-readable findings use `filename:line:column`; JSON findings carry
-one-based `line` and `column` fields. The recursive scan accepts `.js`, `.mjs`,
-`.cjs`, `.jsx`, `.ts`, `.tsx`, `.mts`, `.cts`, and extensionless emitted
-modules, including modules emitted beneath `node_modules`; hidden paths and
-unrelated extensions remain excluded.
-The command exits nonzero when it finds anything. Validate normal output only:
-raw output has no usable module-graph contract.
-Directory validation reads only the emitted files, so it also scans artifacts
-left behind by failed factory recovery. Unresolved numeric webpack runtime
-calls in those artifacts are not treated as relative module edges.
-
 ## Overwrite protection
 
 Wakaru refuses to overwrite existing files unless `--force` is passed.

@@ -26,7 +26,8 @@ reading everything:
 | Correctness / semantics questions | `docs/rewrite-assumptions.md`, `docs/test262-roundtrip.md` |
 | Before proposing a redesign | `docs/learnings/` — approaches already built, measured, and reverted |
 | Performance work | `docs/learnings/performance-round-2026-09.md` — what was measured, kept, and rejected; measurement rules |
-| CLI flag or output changes | `docs/cli.md` — the CLI reference and source of truth for behavior detail; `skills/wakaru/SKILL.md` — the agent skill (carries only what changes the commands an agent runs or how it reads output); `docs-site/content/docs/reference/cli.mdx` — the user-facing docs page. Keep all three in sync in the same commit |
+| Supported CLI flag or output changes | `docs/cli.md` — the CLI reference and source of truth for behavior detail; `skills/wakaru/SKILL.md` — the agent skill (carries only what changes the commands an agent runs or how it reads output); `docs-site/content/docs/reference/cli.mdx` — the user-facing docs page. Keep all three in sync in the same commit |
+| Debug / experimental CLI changes | `docs/cli-debug.md` — current commands, compatibility policy, and feedback path |
 | Agent / tool integration | `skills/wakaru/SKILL.md` — CLI-based agent surface |
 | Docs site content or deployment (`docs-site/`) | `docs/docs-site.md` — basePath gotchas, deploy pattern, sync obligations, content conventions |
 | Cutting a release | `docs/releasing.md` |
