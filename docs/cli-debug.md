@@ -84,6 +84,71 @@ function $0($1) {
 The local function and parameter receive deterministic names, while the free
 reference `fetchModule` remains unchanged.
 
+## `debug enumerate-chunks`
+
+```bash
+wakaru debug enumerate-chunks bundle.js
+cat bundle.js | wakaru debug enumerate-chunks -
+```
+
+Inspects one JavaScript input for statically enumerable lazy-chunk references
+and writes JSON to stdout. It parses and detects the input, but does not unpack
+or decompile modules, write files, or make network requests. The input is
+optional when stdin is piped; use `-` explicitly to select stdin.
+
+The current root shape is:
+
+```json
+{
+  "input": "bundle.js",
+  "detected_format": "webpack5",
+  "enumeration": {
+    "public_path": {"status": "static", "value": "/assets/"},
+    "assets": [{
+      "kind": "js",
+      "status": "enumerated",
+      "template": "[id].[map].js",
+      "urls": [{"chunk_id": "101", "url": "101.aaaa1111.js", "source": "filename_map"}]
+    }],
+    "relative_imports": [
+      {"specifier": "./lazy-beta.js", "kind": "dynamic_import"}
+    ]
+  }
+}
+```
+
+`detected_format` is `null` when structural bundle detection finds no known
+format. `enumeration` is `null` when neither of these fail-closed sources
+produces a fact:
+
+- `assets` describes webpack 4/5 runtime filename tables
+  (`__webpack_require__.u`, `.miniCssF`, or webpack 4's `jsonpScriptSrc`).
+- `relative_imports` describes literal relative specifiers from `import`,
+  `export ... from`, and `import()`. The `kind` is `import`, `export_from`, or
+  `dynamic_import`. Bare packages, absolute URLs, and computed specifiers are
+  excluded. The field is omitted when empty.
+
+For `assets`, `kind` is `js` or `css`. `status` is `enumerated`,
+`no_static_chunk_ids`, or `dynamic_template`. `urls[].source` is
+`filename_map` when an id comes from the filename lookup table, or
+`ensure_call` when it comes from a binding-correlated literal webpack load
+site. `template` is a debug rendering using placeholders such as `[id]`,
+`[map]`, and `[map|id]`; it is absent for dynamic templates and is not a
+machine-parseable contract.
+
+`public_path.status` is `static`, `script_relative`, `runtime_computed`, or
+`not_found`. A `value` is present only for a proven literal static path or the
+literal suffix of webpack's canonical script-relative path. Asset URLs remain
+relative and never include the public path. A caller can resolve
+`public_path.value + urls[].url` against the bundle URL only for `static` and
+`script_relative`; for the other statuses the complete request URL is not
+known. Each `relative_imports[].specifier` is already a relative sibling URL and
+should instead be resolved directly against the entry URL.
+
+Runtime filename tables from other bundler families are not interpreted.
+Their literal relative ESM specifiers can still appear in `relative_imports`.
+Fetching any reported URL is the caller's responsibility.
+
 ## `debug validate`
 
 ```bash

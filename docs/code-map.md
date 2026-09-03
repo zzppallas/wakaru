@@ -74,6 +74,7 @@ crates/
         wrappers.rs                 — UMD/AMD wrapper unwrapping for detection retry
         metro.rs                    — Metro plain-bundle detection and extraction
         scope_hoist.rs              — heuristic scope-hoisted splitting (esbuild, Bun, Rollup, Vite)
+        chunk_enumeration.rs        — fail-closed lazy-chunk URL / relative-import enumeration (`debug enumerate-chunks`)
       utils/
         paren.rs, swc_safety.rs     — paren stripping, SWC panic guards
     tests/

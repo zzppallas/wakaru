@@ -28,8 +28,9 @@ use color::Styled;
 use discovery::{collect_directory_js_inputs, collect_validate_inputs, DirectoryScanStats};
 use formatter::{format_cli_output, selected_formatter};
 use json_output::{
-    JsonDecompileOutput, JsonModule, JsonModuleKind, JsonModuleStatus, JsonUnpackOutput,
-    JsonWarning,
+    JsonChunkAsset, JsonChunkEnumeration, JsonChunkEnumerationOutput, JsonChunkUrl,
+    JsonDecompileOutput, JsonModule, JsonModuleKind, JsonModuleStatus, JsonPublicPath,
+    JsonRelativeImport, JsonUnpackOutput, JsonWarning,
 };
 use output::{canonicalize_output_dir, resolve_unpack_output_path, write_file, write_if_changed};
 use vue::{
@@ -218,6 +219,15 @@ enum DebugCommand {
     /// output only — raw output carries no module-graph contract. Exits
     /// nonzero when findings exist.
     Validate(ValidateArgs),
+
+    /// Statically enumerate chunk references without unpacking modules.
+    EnumerateChunks(EnumerateChunksArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+struct EnumerateChunksArgs {
+    /// Input JavaScript file. Use `-` or omit to read from stdin.
+    input: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -816,7 +826,26 @@ fn run_debug(args: DebugArgs, force: bool) -> Result<()> {
         DebugCommand::Trace(args) => run_trace(args, force),
         DebugCommand::Normalize(args) => run_normalize(args),
         DebugCommand::Validate(args) => run_validate(args),
+        DebugCommand::EnumerateChunks(args) => run_enumerate_chunks(args),
     }
+}
+
+fn run_enumerate_chunks(args: EnumerateChunksArgs) -> Result<()> {
+    let (source, filename) = read_input(args.input.as_ref())?;
+    let output = enumerate_chunks_json(&source, &filename)?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+fn enumerate_chunks_json(source: &str, filename: &str) -> Result<JsonChunkEnumerationOutput> {
+    let report = wakaru_core::unpacker::enumerate_chunks(source, filename)?;
+    Ok(JsonChunkEnumerationOutput {
+        input: filename.to_string(),
+        detected_format: report
+            .detected_format
+            .map(|format| format.as_str().to_string()),
+        enumeration: report.enumeration.as_ref().map(json_chunk_enumeration),
+    })
 }
 
 fn run_validate(args: ValidateArgs) -> Result<()> {
@@ -1009,6 +1038,7 @@ fn json_module_for_artifact(artifact: &CliOutputArtifact) -> JsonModule {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn json_unpack_output_for_artifacts(
     detected_formats: &[CliBundleFormat],
     safety: wakaru::OutputSafety,
@@ -1034,6 +1064,79 @@ fn json_unpack_output_for_artifacts(
         total: total_modules,
         failed,
         elapsed_ms: elapsed.as_millis() as u64,
+    }
+}
+
+fn json_chunk_enumeration(
+    enumeration: &wakaru_core::unpacker::chunk_enumeration::ChunkEnumeration,
+) -> JsonChunkEnumeration {
+    use wakaru_core::unpacker::chunk_enumeration::{
+        ChunkAssetKind, ChunkEnumerationStatus, ChunkIdSource, PublicPathFact, RelativeImportKind,
+    };
+
+    JsonChunkEnumeration {
+        public_path: match &enumeration.public_path {
+            PublicPathFact::Static(value) => JsonPublicPath {
+                status: "static".to_string(),
+                value: Some(value.clone()),
+            },
+            PublicPathFact::ScriptRelative(suffix) => JsonPublicPath {
+                status: "script_relative".to_string(),
+                value: Some(suffix.clone()),
+            },
+            PublicPathFact::RuntimeComputed => JsonPublicPath {
+                status: "runtime_computed".to_string(),
+                value: None,
+            },
+            PublicPathFact::NotFound => JsonPublicPath {
+                status: "not_found".to_string(),
+                value: None,
+            },
+        },
+        assets: enumeration
+            .assets
+            .iter()
+            .map(|asset| JsonChunkAsset {
+                kind: match asset.kind {
+                    ChunkAssetKind::Js => "js",
+                    ChunkAssetKind::Css => "css",
+                }
+                .to_string(),
+                status: match asset.status {
+                    ChunkEnumerationStatus::Enumerated => "enumerated",
+                    ChunkEnumerationStatus::NoStaticChunkIds => "no_static_chunk_ids",
+                    ChunkEnumerationStatus::DynamicTemplate => "dynamic_template",
+                }
+                .to_string(),
+                template: asset.template.clone(),
+                urls: asset
+                    .urls
+                    .iter()
+                    .map(|url| JsonChunkUrl {
+                        chunk_id: url.chunk_id.clone(),
+                        url: url.url.clone(),
+                        source: match url.source {
+                            ChunkIdSource::FilenameMap => "filename_map",
+                            ChunkIdSource::EnsureCall => "ensure_call",
+                        }
+                        .to_string(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        relative_imports: enumeration
+            .relative_imports
+            .iter()
+            .map(|import| JsonRelativeImport {
+                specifier: import.specifier.clone(),
+                kind: match import.kind {
+                    RelativeImportKind::Import => "import",
+                    RelativeImportKind::ExportFrom => "export_from",
+                    RelativeImportKind::DynamicImport => "dynamic_import",
+                }
+                .to_string(),
+            })
+            .collect(),
     }
 }
 

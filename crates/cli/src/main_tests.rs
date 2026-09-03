@@ -168,6 +168,19 @@ fn parses_debug_validate_command_with_repeated_inputs() {
 }
 
 #[test]
+fn parses_debug_enumerate_chunks_command() {
+    let cli = Cli::try_parse_from(["wakaru", "debug", "enumerate-chunks", "input.js"])
+        .expect("debug enumerate-chunks command should parse");
+
+    match cli.command {
+        Some(Command::Debug(DebugArgs {
+            command: DebugCommand::EnumerateChunks(args),
+        })) => assert_eq!(args.input, Some(PathBuf::from("input.js"))),
+        other => panic!("expected debug enumerate-chunks command, got {other:?}"),
+    }
+}
+
+#[test]
 fn debug_validate_formats_source_locations_for_text_and_json() {
     let finding = wakaru_core::OutputFinding {
         filename: "nested/entry.js".into(),
@@ -1780,4 +1793,66 @@ fn public_diagnostic_keeps_facade_code_and_severity() {
     assert_eq!(warning.kind, "fact_collection_failed");
     assert!(!warning.is_error);
     assert_eq!(warning.message, "could not collect facts");
+}
+
+#[test]
+fn regular_unpack_json_has_no_chunk_enumeration_surface() {
+    let json = JsonUnpackOutput {
+        detected_formats: vec!["webpack5".to_string()],
+        safety: "normal".to_string(),
+        modules: Vec::new(),
+        warnings: Vec::new(),
+        total: 0,
+        failed: 0,
+        elapsed_ms: 1,
+    };
+    let rendered = serde_json::to_string(&json).expect("serialize");
+    assert!(
+        !rendered.contains("chunk_enumeration"),
+        "debug metadata leaked into regular unpack JSON:\n{rendered}"
+    );
+}
+
+#[test]
+fn debug_enumerate_chunks_serializes_relative_imports_at_root() {
+    let output = enumerate_chunks_json(
+        r#"import value from "./aaaa1111.js"; import("./lazy-beta.js");"#,
+        "entry.js",
+    )
+    .expect("enumerate chunks");
+    let rendered = serde_json::to_string(&output).expect("serialize");
+    assert!(rendered.contains(r#""input":"entry.js""#), "{rendered}");
+    assert!(rendered.contains(r#""detected_format":null"#), "{rendered}");
+    assert!(rendered.contains(
+        r#""relative_imports":[{"specifier":"./aaaa1111.js","kind":"import"},{"specifier":"./lazy-beta.js","kind":"dynamic_import"}]"#
+    ), "unexpected shape:\n{rendered}");
+}
+
+#[test]
+fn debug_enumerate_chunks_returns_null_without_facts() {
+    let output =
+        enumerate_chunks_json("console.log('plain');", "plain.js").expect("enumerate plain source");
+    assert!(output.detected_format.is_none());
+    assert!(output.enumeration.is_none());
+}
+
+#[test]
+fn debug_enumerate_chunks_reports_webpack_fixture_without_unpacking() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../core/tests/bundles/webpack-gen/dist/wp5-array/bundle.js"
+    );
+    let source = std::fs::read_to_string(fixture).expect("fixture read");
+    let output = enumerate_chunks_json(&source, "bundle.js").expect("enumerate fixture");
+    assert_eq!(output.detected_format.as_deref(), Some("webpack5"));
+    let rendered = output.enumeration.expect("fixture enumeration");
+    assert_eq!(rendered.public_path.status, "runtime_computed");
+    let [asset] = rendered.assets.as_slice() else {
+        panic!("expected one asset");
+    };
+    assert_eq!(asset.kind, "js");
+    assert_eq!(asset.status, "enumerated");
+    assert_eq!(asset.urls.len(), 1);
+    assert_eq!(asset.urls[0].url, "chunk-1.js");
+    assert_eq!(asset.urls[0].source, "ensure_call");
 }
