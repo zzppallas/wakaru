@@ -1,14 +1,15 @@
 use std::collections::HashSet;
 
+use swc_core::atoms::Atom;
 use swc_core::common::{Mark, SyntaxContext, DUMMY_SP};
 use swc_core::ecma::ast::{
     ArrowExpr, AssignExpr, AssignTarget, BinaryOp, BlockStmt, Callee, ClassExpr, Constructor, Decl,
-    Expr, ExprStmt, FnExpr, ForHead, ForInStmt, ForOfStmt, ForStmt, Function, GetterProp, IfStmt,
-    ImportSpecifier, Invalid, Lit, MemberExpr, ModuleDecl, ModuleItem, NewExpr, ParenExpr, Pat,
-    ReturnStmt, SeqExpr, SetterProp, SimpleAssignTarget, Stmt, SwitchStmt, ThrowStmt, UnaryExpr,
-    UnaryOp, VarDecl, VarDeclKind, VarDeclOrExpr, VarDeclarator, YieldExpr,
+    Expr, ExprStmt, FnExpr, ForHead, ForInStmt, ForOfStmt, ForStmt, Function, GetterProp, Id,
+    Ident, IfStmt, ImportSpecifier, Invalid, Lit, MemberExpr, MemberProp, ModuleDecl, ModuleItem,
+    NewExpr, ParenExpr, Pat, ReturnStmt, SeqExpr, SetterProp, SimpleAssignTarget, Stmt, SwitchStmt,
+    ThrowStmt, UnaryExpr, UnaryOp, VarDecl, VarDeclKind, VarDeclOrExpr, VarDeclarator, YieldExpr,
 };
-use swc_core::ecma::utils::{ExprCtx, ExprExt};
+use swc_core::ecma::utils::{find_pat_ids, ExprCtx, ExprExt};
 use swc_core::ecma::visit::{Visit, VisitMut, VisitMutWith, VisitWith};
 
 use super::decl_utils::BindingId;
@@ -956,6 +957,12 @@ fn can_split_standalone_for_init_expr(expr: &Expr) -> bool {
 
 /// Extract sequence prefixes from each declarator's init, without splitting
 /// the var decl into individual declarations (needed for for-loop scope).
+///
+/// Walk left to right. A comma prefix that reads an earlier binding in this
+/// same list must not run before that binding's initializer:
+/// - `var`: flush already-collected declarators as statements, then the prefix.
+/// - `let` / `const`: cannot hoist those declarators out of the `for`; leave
+///   that init unsplit (fail-closed).
 fn extract_var_decl_prefix(
     var: Box<VarDecl>,
     span: swc_core::common::Span,
@@ -964,12 +971,17 @@ fn extract_var_decl_prefix(
     let kind = var.kind;
     let ctxt = var.ctxt;
     let var_span = var.span;
+    let is_var = kind == VarDeclKind::Var;
     let mut prefix = Vec::new();
     let mut new_decls = Vec::new();
+    // Names bound by earlier declarators in this list. Not cleared on flush:
+    // later prefixes still see those names as already initialized in source order.
+    let mut bound_so_far: HashSet<Atom> = HashSet::new();
 
     for decl in var.decls {
         if let Some(init) = decl.init {
             if level == RewriteLevel::Minimal && sequence_blocks_decl_name_inference(&init) {
+                collect_pat_bound_names(&decl.name, &mut bound_so_far);
                 new_decls.push(VarDeclarator {
                     span: decl.span,
                     name: decl.name,
@@ -979,9 +991,26 @@ fn extract_var_decl_prefix(
                 continue;
             }
             let (pre, last) = split_expr_seq(init);
+            let keep_unsplit = !pre.is_empty()
+                && (seq_prefix_has_string_lit(&pre)
+                    || (!is_var && seq_prefix_refs_bound_names(&pre, &bound_so_far)));
+            if keep_unsplit {
+                collect_pat_bound_names(&decl.name, &mut bound_so_far);
+                new_decls.push(VarDeclarator {
+                    span: decl.span,
+                    name: decl.name,
+                    init: Some(rejoin_seq(pre, last)),
+                    definite: decl.definite,
+                });
+                continue;
+            }
+            if !pre.is_empty() && is_var && seq_prefix_refs_bound_names(&pre, &bound_so_far) {
+                flush_var_declarators(&mut prefix, &mut new_decls, var_span, ctxt, kind);
+            }
             for p in pre {
                 prefix.push(Stmt::Expr(ExprStmt { span, expr: p }));
             }
+            collect_pat_bound_names(&decl.name, &mut bound_so_far);
             new_decls.push(VarDeclarator {
                 span: decl.span,
                 name: decl.name,
@@ -989,6 +1018,7 @@ fn extract_var_decl_prefix(
                 definite: decl.definite,
             });
         } else {
+            collect_pat_bound_names(&decl.name, &mut bound_so_far);
             new_decls.push(decl);
         }
     }
@@ -1002,6 +1032,78 @@ fn extract_var_decl_prefix(
     });
 
     (prefix, new_var)
+}
+
+fn collect_pat_bound_names(pat: &Pat, names: &mut HashSet<Atom>) {
+    let ids: Vec<Id> = find_pat_ids(pat);
+    names.extend(ids.into_iter().map(|(sym, _)| sym));
+}
+
+fn flush_var_declarators(
+    prefix: &mut Vec<Stmt>,
+    new_decls: &mut Vec<VarDeclarator>,
+    span: swc_core::common::Span,
+    ctxt: SyntaxContext,
+    kind: VarDeclKind,
+) {
+    if new_decls.is_empty() {
+        return;
+    }
+    prefix.push(Stmt::Decl(Decl::Var(Box::new(VarDecl {
+        span,
+        ctxt,
+        kind,
+        declare: false,
+        decls: std::mem::take(new_decls),
+    }))));
+}
+
+fn rejoin_seq(mut prefix: Vec<Box<Expr>>, last: Box<Expr>) -> Box<Expr> {
+    if prefix.is_empty() {
+        return last;
+    }
+    prefix.push(last);
+    Box::new(Expr::Seq(SeqExpr {
+        span: DUMMY_SP,
+        exprs: prefix,
+    }))
+}
+
+fn seq_prefix_has_string_lit(prefix: &[Box<Expr>]) -> bool {
+    prefix
+        .iter()
+        .any(|expr| matches!(strip_parens(expr), Expr::Lit(Lit::Str(_))))
+}
+
+fn seq_prefix_refs_bound_names(prefix: &[Box<Expr>], bound: &HashSet<Atom>) -> bool {
+    prefix.iter().any(|expr| expr_refs_bound_names(expr, bound))
+}
+
+fn expr_refs_bound_names(expr: &Expr, bound: &HashSet<Atom>) -> bool {
+    if bound.is_empty() {
+        return false;
+    }
+    struct Finder<'a> {
+        bound: &'a HashSet<Atom>,
+        hit: bool,
+    }
+    impl Visit for Finder<'_> {
+        fn visit_ident(&mut self, ident: &Ident) {
+            if self.bound.contains(&ident.sym) {
+                self.hit = true;
+            }
+        }
+
+        fn visit_member_prop(&mut self, prop: &MemberProp) {
+            // `obj.ident` is a property name, not a binding read.
+            if let MemberProp::Computed(computed) = prop {
+                computed.visit_with(self);
+            }
+        }
+    }
+    let mut finder = Finder { bound, hit: false };
+    expr.visit_with(&mut finder);
+    finder.hit
 }
 
 fn sequence_blocks_decl_name_inference(expr: &Expr) -> bool {

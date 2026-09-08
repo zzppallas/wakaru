@@ -897,3 +897,107 @@ a.b = c;
     let output = apply(input);
     assert_eq_normalized(&output, expected);
 }
+
+// Babel loose `for-of` packs Map entry unpack into the inner for-init:
+// `for (var a, r = n.value, s = (r[0], r[1]), l = helper(s); !(a = l()).done;)`
+// Sequence prefixes must not run before earlier declarators in the same list.
+
+#[test]
+fn for_var_init_sequence_prefix_does_not_read_earlier_declarator_before_init() {
+    let input = r#"
+function walk(n, helper) {
+  for (var a, r = n.value, s = (r[0], r[1]), l = helper(s); !(a = l()).done;);
+}
+"#;
+    let expected = r#"
+function walk(n, helper) {
+  var a, r = n.value;
+  r[0];
+  for (var s = r[1], l = helper(s); !(a = l()).done;);
+}
+"#;
+    let output = apply(input);
+    assert_eq_normalized(&output, expected);
+}
+
+#[test]
+fn for_var_init_independent_sequence_prefix_still_lifts() {
+    // Independent prefixes must still lift; this is not a blanket fail-closed.
+    let input = r#"
+for (var i = 0, j = (foo(), 1); i < n; i++) {}
+"#;
+    let expected = r#"
+foo();
+for (var i = 0, j = 1; i < n; i++) {}
+"#;
+    let output = apply(input);
+    assert_eq_normalized(&output, expected);
+}
+
+#[test]
+fn for_let_init_sequence_prefix_that_reads_earlier_decl_stays_unsplit() {
+    // Lexical for-init bindings cannot be hoisted out of the loop.
+    let input = r#"
+for (let r = n.value, s = (r[0], r[1]); r < 10; r++) {}
+"#;
+    let output = apply(input);
+    assert_eq_normalized(&output, input);
+}
+
+#[test]
+fn for_const_init_sequence_prefix_that_reads_earlier_decl_stays_unsplit() {
+    // Same fail-closed as `let`: do not pull const declarators out of the `for`.
+    let input = r#"
+for (const r = n.value, s = (r[0], r[1]); false; ) {}
+"#;
+    let output = apply(input);
+    assert_eq_normalized(&output, input);
+}
+
+#[test]
+fn for_var_init_function_iife_prefix_keeps_expression_context() {
+    // Lifted function-callee IIFE must stay an expression, not `function(){}()`.
+    let input = r#"
+function run() {
+  for (var x = 0, y = ((function () {})(), 1); false;);
+}
+"#;
+    let expected = r#"
+function run() {
+  (function() {})();
+  for (var x = 0, y = 1; false;);
+}
+"#;
+    let output = apply(input);
+    assert_eq_normalized(&output, expected);
+}
+
+#[test]
+fn for_var_init_object_headed_prefix_keeps_expression_context() {
+    // Lifted object-headed call chains must keep expression context.
+    let input = r#"
+function run(k, h) {
+  for (var x = 0, y = ({ [k()]: h }[k()](), 1); false;);
+}
+"#;
+    let expected = r#"
+function run(k, h) {
+  ({ [k()]: h })[k()]();
+  for (var x = 0, y = 1; false;);
+}
+"#;
+    let output = apply(input);
+    assert_eq_normalized(&output, expected);
+}
+
+#[test]
+fn for_var_init_string_prefix_does_not_become_directive() {
+    // A leading string statement can become a directive; leave this init unsplit.
+    let input = r#"
+function run() {
+  for (var x = ("use strict", 1); false;);
+}
+"#;
+    let output = apply(input);
+    assert_eq_normalized(&output, input);
+}
