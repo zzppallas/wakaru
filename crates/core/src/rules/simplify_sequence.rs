@@ -4,15 +4,15 @@ use swc_core::atoms::Atom;
 use swc_core::common::{Mark, SyntaxContext, DUMMY_SP};
 use swc_core::ecma::ast::{
     ArrowExpr, AssignExpr, AssignTarget, BinaryOp, BlockStmt, Callee, ClassExpr, Constructor, Decl,
-    Expr, ExprStmt, FnExpr, ForHead, ForInStmt, ForOfStmt, ForStmt, Function, GetterProp, Id,
-    Ident, IfStmt, ImportSpecifier, Invalid, Lit, MemberExpr, MemberProp, ModuleDecl, ModuleItem,
-    NewExpr, ParenExpr, Pat, ReturnStmt, SeqExpr, SetterProp, SimpleAssignTarget, Stmt, SwitchStmt,
-    ThrowStmt, UnaryExpr, UnaryOp, VarDecl, VarDeclKind, VarDeclOrExpr, VarDeclarator, YieldExpr,
+    Expr, ExprStmt, FnExpr, ForHead, ForInStmt, ForOfStmt, ForStmt, Function, GetterProp, Ident,
+    IfStmt, ImportSpecifier, Invalid, Lit, MemberExpr, ModuleDecl, ModuleItem, NewExpr, ParenExpr,
+    Pat, ReturnStmt, SeqExpr, SetterProp, SimpleAssignTarget, Stmt, SwitchStmt, ThrowStmt,
+    UnaryExpr, UnaryOp, VarDecl, VarDeclKind, VarDeclOrExpr, VarDeclarator, YieldExpr,
 };
-use swc_core::ecma::utils::{find_pat_ids, ExprCtx, ExprExt};
+use swc_core::ecma::utils::{ExprCtx, ExprExt};
 use swc_core::ecma::visit::{Visit, VisitMut, VisitMutWith, VisitWith};
 
-use super::decl_utils::BindingId;
+use super::decl_utils::{binding_id, BindingId};
 use super::RewriteLevel;
 
 use crate::js_names::is_stable_builtin_alias_root;
@@ -955,14 +955,15 @@ fn can_split_standalone_for_init_expr(expr: &Expr) -> bool {
     }
 }
 
-/// Extract sequence prefixes from each declarator's init, without splitting
-/// the var decl into individual declarations (needed for for-loop scope).
+/// Extract sequence prefixes from a for-loop declaration while preserving
+/// declarator evaluation order and lexical scope.
 ///
-/// Walk left to right. A comma prefix that reads an earlier binding in this
-/// same list must not run before that binding's initializer:
+/// Walk left to right without moving a comma prefix ahead of earlier
+/// initializer effects:
 /// - `var`: flush already-collected declarators as statements, then the prefix.
-/// - `let` / `const`: cannot hoist those declarators out of the `for`; leave
-///   that init unsplit (fail-closed).
+/// - `let` / `const`: cannot hoist those declarators out of the `for`, so a
+///   later declarator's prefix stays unsplit. A first prefix may lift only when
+///   it does not reference any lexical binding in the whole header (TDZ).
 fn extract_var_decl_prefix(
     var: Box<VarDecl>,
     span: swc_core::common::Span,
@@ -974,14 +975,25 @@ fn extract_var_decl_prefix(
     let is_var = kind == VarDeclKind::Var;
     let mut prefix = Vec::new();
     let mut new_decls = Vec::new();
-    // Names bound by earlier declarators in this list. Not cleared on flush:
-    // later prefixes still see those names as already initialized in source order.
-    let mut bound_so_far: HashSet<Atom> = HashSet::new();
+    let mut header_bindings = HashSet::new();
+    if !is_var {
+        for decl in &var.decls {
+            collect_binding_ids_from_pat(&decl.name, &mut header_bindings);
+        }
+    }
+    let mut future_header_names: HashSet<Atom> =
+        header_bindings.iter().map(|(sym, _)| sym.clone()).collect();
 
     for decl in var.decls {
+        if !is_var {
+            let mut current_bindings = HashSet::new();
+            collect_binding_ids_from_pat(&decl.name, &mut current_bindings);
+            for (sym, _) in current_bindings {
+                future_header_names.remove(&sym);
+            }
+        }
         if let Some(init) = decl.init {
             if level == RewriteLevel::Minimal && sequence_blocks_decl_name_inference(&init) {
-                collect_pat_bound_names(&decl.name, &mut bound_so_far);
                 new_decls.push(VarDeclarator {
                     span: decl.span,
                     name: decl.name,
@@ -993,9 +1005,14 @@ fn extract_var_decl_prefix(
             let (pre, last) = split_expr_seq(init);
             let keep_unsplit = !pre.is_empty()
                 && (seq_prefix_has_string_lit(&pre)
-                    || (!is_var && seq_prefix_refs_bound_names(&pre, &bound_so_far)));
+                    || (!is_var
+                        && (!new_decls.is_empty()
+                            || seq_prefix_refs_lexical_header(
+                                &pre,
+                                &header_bindings,
+                                &future_header_names,
+                            ))));
             if keep_unsplit {
-                collect_pat_bound_names(&decl.name, &mut bound_so_far);
                 new_decls.push(VarDeclarator {
                     span: decl.span,
                     name: decl.name,
@@ -1004,13 +1021,12 @@ fn extract_var_decl_prefix(
                 });
                 continue;
             }
-            if !pre.is_empty() && is_var && seq_prefix_refs_bound_names(&pre, &bound_so_far) {
+            if !pre.is_empty() && is_var {
                 flush_var_declarators(&mut prefix, &mut new_decls, var_span, ctxt, kind);
             }
             for p in pre {
                 prefix.push(Stmt::Expr(ExprStmt { span, expr: p }));
             }
-            collect_pat_bound_names(&decl.name, &mut bound_so_far);
             new_decls.push(VarDeclarator {
                 span: decl.span,
                 name: decl.name,
@@ -1018,7 +1034,6 @@ fn extract_var_decl_prefix(
                 definite: decl.definite,
             });
         } else {
-            collect_pat_bound_names(&decl.name, &mut bound_so_far);
             new_decls.push(decl);
         }
     }
@@ -1032,11 +1047,6 @@ fn extract_var_decl_prefix(
     });
 
     (prefix, new_var)
-}
-
-fn collect_pat_bound_names(pat: &Pat, names: &mut HashSet<Atom>) {
-    let ids: Vec<Id> = find_pat_ids(pat);
-    names.extend(ids.into_iter().map(|(sym, _)| sym));
 }
 
 fn flush_var_declarators(
@@ -1075,33 +1085,46 @@ fn seq_prefix_has_string_lit(prefix: &[Box<Expr>]) -> bool {
         .any(|expr| matches!(strip_parens(expr), Expr::Lit(Lit::Str(_))))
 }
 
-fn seq_prefix_refs_bound_names(prefix: &[Box<Expr>], bound: &HashSet<Atom>) -> bool {
-    prefix.iter().any(|expr| expr_refs_bound_names(expr, bound))
+fn seq_prefix_refs_lexical_header(
+    prefix: &[Box<Expr>],
+    bindings: &HashSet<BindingId>,
+    future_names: &HashSet<Atom>,
+) -> bool {
+    prefix
+        .iter()
+        .any(|expr| expr_refs_lexical_header(expr, bindings, future_names))
 }
 
-fn expr_refs_bound_names(expr: &Expr, bound: &HashSet<Atom>) -> bool {
-    if bound.is_empty() {
+fn expr_refs_lexical_header(
+    expr: &Expr,
+    bindings: &HashSet<BindingId>,
+    future_names: &HashSet<Atom>,
+) -> bool {
+    if bindings.is_empty() && future_names.is_empty() {
         return false;
     }
     struct Finder<'a> {
-        bound: &'a HashSet<Atom>,
+        bindings: &'a HashSet<BindingId>,
+        future_names: &'a HashSet<Atom>,
         hit: bool,
     }
     impl Visit for Finder<'_> {
         fn visit_ident(&mut self, ident: &Ident) {
-            if self.bound.contains(&ident.sym) {
+            // SWC resolves a read before a later same-list lexical declarator
+            // to an outer binding context, even though JavaScript evaluates it
+            // against that declarator's TDZ. Use names only for those future
+            // bindings; current and earlier bindings still require exact IDs.
+            if self.bindings.contains(&binding_id(ident)) || self.future_names.contains(&ident.sym)
+            {
                 self.hit = true;
             }
         }
-
-        fn visit_member_prop(&mut self, prop: &MemberProp) {
-            // `obj.ident` is a property name, not a binding read.
-            if let MemberProp::Computed(computed) = prop {
-                computed.visit_with(self);
-            }
-        }
     }
-    let mut finder = Finder { bound, hit: false };
+    let mut finder = Finder {
+        bindings,
+        future_names,
+        hit: false,
+    };
     expr.visit_with(&mut finder);
     finder.hit
 }

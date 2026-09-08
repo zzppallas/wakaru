@@ -921,17 +921,36 @@ function walk(n, helper) {
 }
 
 #[test]
-fn for_var_init_independent_sequence_prefix_still_lifts() {
-    // Independent prefixes must still lift; this is not a blanket fail-closed.
+fn for_var_init_independent_sequence_prefix_keeps_prior_initializer_order() {
+    // A call can observe any earlier `var` through effects or a closure even
+    // when its argument AST does not directly reference that binding.
     let input = r#"
-for (var i = 0, j = (foo(), 1); i < n; i++) {}
+function run(log) {
+  for (var a = log("init"), b = (log("prefix"), 1); false;);
+}
 "#;
     let expected = r#"
-foo();
-for (var i = 0, j = 1; i < n; i++) {}
+function run(log) {
+  var a = log("init");
+  log("prefix");
+  for (var b = 1; false;);
+}
 "#;
     let output = apply(input);
     assert_eq_normalized(&output, expected);
+}
+
+#[test]
+fn for_let_init_independent_later_prefix_keeps_prior_initializer_order() {
+    // A lexical declarator cannot be flushed out of the loop, so keep the
+    // later sequence intact rather than moving its effects before `a`.
+    let input = r#"
+function run(log) {
+  for (let a = log("init"), b = (log("prefix"), 1); false;);
+}
+"#;
+    let output = apply(input);
+    assert_eq_normalized(&output, input);
 }
 
 #[test]
@@ -955,6 +974,40 @@ for (const r = n.value, s = (r[0], r[1]); false; ) {}
 }
 
 #[test]
+fn for_let_init_sequence_prefix_self_reference_stays_in_tdz() {
+    let input = r#"
+let x = 0;
+for (let x = (x, 1); false;);
+"#;
+    let output = apply(input);
+    assert_eq_normalized(&output, input);
+}
+
+#[test]
+fn for_const_init_sequence_prefix_later_reference_stays_in_tdz() {
+    let input = r#"
+const later = 0;
+for (const x = (later, 1), later = 2; false;);
+"#;
+    let output = apply(input);
+    assert_eq_normalized(&output, input);
+}
+
+#[test]
+fn for_let_init_shadowed_header_name_does_not_trigger_tdz_guard() {
+    // Resolver identity distinguishes the IIFE parameter from the loop binding.
+    let input = r#"
+for (let x = ((function(x) { use(x); })(0), 1); false;);
+"#;
+    let expected = r#"
+(function(x) { use(x); })(0);
+for (let x = 1; false;);
+"#;
+    let output = apply(input);
+    assert_eq_normalized(&output, expected);
+}
+
+#[test]
 fn for_var_init_function_iife_prefix_keeps_expression_context() {
     // Lifted function-callee IIFE must stay an expression, not `function(){}()`.
     let input = r#"
@@ -964,8 +1017,9 @@ function run() {
 "#;
     let expected = r#"
 function run() {
+  var x = 0;
   (function() {})();
-  for (var x = 0, y = 1; false;);
+  for (var y = 1; false;);
 }
 "#;
     let output = apply(input);
@@ -982,8 +1036,9 @@ function run(k, h) {
 "#;
     let expected = r#"
 function run(k, h) {
+  var x = 0;
   ({ [k()]: h })[k()]();
-  for (var x = 0, y = 1; false;);
+  for (var y = 1; false;);
 }
 "#;
     let output = apply(input);
