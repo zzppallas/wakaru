@@ -1,10 +1,9 @@
+import { installNodeTool } from "./node-tool.mjs";
 import { runNodeBatch } from "./tool-process.mjs";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
-  existsSync,
   mkdtempSync,
-  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -724,29 +723,19 @@ export function batchRunner(lazyBatch) {
 }
 
 export function ensureNodeTool(name, packages) {
-  const toolRoot = join(repoRoot, "target", "repro-tools");
-  const dir = join(toolRoot, name);
-  const marker = join(dir, ".installed");
-  const markerText = packages.join("\n");
+  const dir = join(repoRoot, "target", "repro-tools", name);
   const refresh = process.env.WAKARU_REPRO_REFRESH_TOOLS === "1" && !refreshedNodeTools.has(dir);
-  if (!refresh && existsSync(marker) && readFileSync(marker, "utf8") === markerText) {
-    return dir;
-  }
   if (refresh) {
     refreshedNodeTools.add(dir);
   }
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ private: true, type: "commonjs" }, null, 2));
-  runCommandScript("npm", ["install", "--silent", "--no-audit", "--no-fund", ...packages], { cwd: dir });
-  writeFileSync(marker, markerText);
-  return dir;
+  return installNodeTool(dir, packages.join("\n"), (staging) => {
+    writeFileSync(join(staging, "package.json"), JSON.stringify({ private: true, type: "commonjs" }, null, 2));
+    runCommandScript("npm", ["install", "--silent", "--no-audit", "--no-fund", ...packages], { cwd: staging });
+  }, { refresh });
 }
 
 export function ensureLockedNodeTool(name, manifestDir) {
-  const toolRoot = join(repoRoot, "target", "repro-tools");
-  const dir = join(toolRoot, name);
-  const marker = join(dir, ".installed");
+  const dir = join(repoRoot, "target", "repro-tools", name);
   const packageJson = join(manifestDir, "package.json");
   const packageLock = join(manifestDir, "package-lock.json");
   const markerText = createHash("sha256")
@@ -755,19 +744,14 @@ export function ensureLockedNodeTool(name, manifestDir) {
     .update(readFileSync(packageLock))
     .digest("hex");
   const refresh = process.env.WAKARU_REPRO_REFRESH_TOOLS === "1" && !refreshedNodeTools.has(dir);
-  if (!refresh && existsSync(marker) && readFileSync(marker, "utf8") === markerText) {
-    return dir;
-  }
   if (refresh) {
     refreshedNodeTools.add(dir);
   }
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
-  copyFileSync(packageJson, join(dir, "package.json"));
-  copyFileSync(packageLock, join(dir, "package-lock.json"));
-  runCommandScript("npm", ["ci", "--silent", "--no-audit", "--no-fund"], { cwd: dir });
-  writeFileSync(marker, markerText);
-  return dir;
+  return installNodeTool(dir, markerText, (staging) => {
+    copyFileSync(packageJson, join(staging, "package.json"));
+    copyFileSync(packageLock, join(staging, "package-lock.json"));
+    runCommandScript("npm", ["ci", "--silent", "--no-audit", "--no-fund"], { cwd: staging });
+  }, { refresh });
 }
 
 function runCommandScript(command, args, options = {}) {

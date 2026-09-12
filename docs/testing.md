@@ -449,6 +449,14 @@ read an empty file during overwrite or execute another profile's complete
 launcher. JSON validation reports the producer, exit/signal, output size and
 bounded stderr instead of a bare parse error.
 
+Install tools with `ensureNodeTool` / `ensureLockedNodeTool` from
+`lib/runner.mjs`, never with a direct `npm install` into `target/repro-tools/`.
+Matrices, tests, and `node --test` workers share that cache and install the
+same tool concurrently, so `lib/node-tool.mjs` populates a staging directory
+and renames it into place; a complete install is never deleted from under a
+process that already returned it. Transient `<tool>.staging-*` and
+`<tool>.stale-*` siblings belong to a running installer.
+
 This isolates launcher execution, not dependency installation. Populate caches
 before concurrent runs and avoid refreshing/reinstalling a tool while another
 process uses it. `WAKARU_REPRO_JOBS` limits one matrix process; it does not lock
