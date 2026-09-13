@@ -5,9 +5,9 @@ use swc_core::common::{Mark, SyntaxContext, DUMMY_SP};
 use swc_core::ecma::ast::{
     ArrowExpr, AssignExpr, AssignTarget, BinaryOp, BlockStmt, Callee, ClassExpr, Constructor, Decl,
     Expr, ExprStmt, FnExpr, ForHead, ForInStmt, ForOfStmt, ForStmt, Function, GetterProp, Ident,
-    IfStmt, ImportSpecifier, Invalid, Lit, MemberExpr, ModuleDecl, ModuleItem, NewExpr, ParenExpr,
-    Pat, ReturnStmt, SeqExpr, SetterProp, SimpleAssignTarget, Stmt, SwitchStmt, ThrowStmt,
-    UnaryExpr, UnaryOp, VarDecl, VarDeclKind, VarDeclOrExpr, VarDeclarator, YieldExpr,
+    IfStmt, ImportSpecifier, Invalid, Lit, MemberExpr, ModuleDecl, ModuleItem, ParenExpr, Pat,
+    ReturnStmt, SeqExpr, SetterProp, SimpleAssignTarget, Stmt, SwitchStmt, ThrowStmt, UnaryExpr,
+    UnaryOp, VarDecl, VarDeclKind, VarDeclOrExpr, VarDeclarator, YieldExpr,
 };
 use swc_core::ecma::utils::{ExprCtx, ExprExt};
 use swc_core::ecma::visit::{Visit, VisitMut, VisitMutWith, VisitWith};
@@ -248,12 +248,6 @@ fn is_pure_no_op_stmt(
         return false;
     }
     if has_new_expr(expr) {
-        return false;
-    }
-    // Nested `new` on an async or generator function expression throws a
-    // TypeError: neither is constructible. swc_ecma_utils 35 treats any empty
-    // function expression as a pure `new` callee, so it must not decide here.
-    if has_new_on_non_constructible_callee(expr) {
         return false;
     }
     let unresolved_ctxt = SyntaxContext::empty().apply_mark(unresolved_mark);
@@ -597,36 +591,6 @@ fn has_new_expr(expr: &Expr) -> bool {
         Expr::Paren(paren) => has_new_expr(&paren.expr),
         _ => false,
     }
-}
-
-fn has_new_on_non_constructible_callee(expr: &Expr) -> bool {
-    let mut detector = NonConstructibleNewDetector { found: false };
-    expr.visit_with(&mut detector);
-    detector.found
-}
-
-struct NonConstructibleNewDetector {
-    found: bool,
-}
-
-impl Visit for NonConstructibleNewDetector {
-    fn visit_new_expr(&mut self, new_expr: &NewExpr) {
-        if self.found {
-            return;
-        }
-        if let Expr::Fn(FnExpr { function, .. }) = strip_parens(&new_expr.callee) {
-            if function.is_async || function.is_generator {
-                self.found = true;
-                return;
-            }
-        }
-        new_expr.visit_children_with(self);
-    }
-
-    // Function bodies do not run while the statement evaluates.
-    fn visit_fn_expr(&mut self, _: &FnExpr) {}
-
-    fn visit_arrow_expr(&mut self, _: &ArrowExpr) {}
 }
 
 fn binary_op_can_throw_on_literals(op: BinaryOp, left: &Expr, right: &Expr) -> bool {

@@ -736,7 +736,10 @@ assert.throws(Test262Error, function() {
 #[test]
 fn preserves_nested_new_on_async_function_expression() {
     // `new` on a non-constructible callee throws a TypeError even when the
-    // enclosing expression's value is unused.
+    // enclosing expression's value is unused. SimplifySequence relies on
+    // swc_ecma_utils `may_have_side_effects` for this (fixed in 35.0.2); these
+    // tests are the tripwire if a later swc_ecma_utils treats the callee as
+    // pure again.
     let input = r#"
 [new async function() {}];
 "#;
@@ -772,6 +775,26 @@ fn drops_nested_new_on_empty_plain_function_expression() {
 "#;
     let output = apply(input);
     assert_eq_normalized(&output, "");
+}
+
+#[test]
+fn preserves_elision_only_array_assignment_pattern() {
+    // `[,] = f()` advances the iterator once, so the statement is observable
+    // even though it binds nothing. swc_ecma_parser 45.1.2 keeps the trailing
+    // elision in assignment patterns (earlier versions parsed it as `[] = f()`);
+    // this pins that the pattern reaches the rule intact and survives it.
+    let input = r#"
+[,] = f();
+[, ,] = f();
+[a, ,] = f();
+"#;
+    let expected = r#"
+[,] = f();
+[, ,] = f();
+[a, ,] = f();
+"#;
+    assert_eq_normalized(&apply(input), expected);
+    assert_eq_normalized(&apply_minimal(input), expected);
 }
 
 #[test]
