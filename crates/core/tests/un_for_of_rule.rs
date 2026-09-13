@@ -4,7 +4,10 @@ use common::{assert_eq_normalized, render, render_pipeline_until, render_rule};
 use wakaru_core::facts::{
     ModuleFacts, ModuleFactsMap, TypeScriptHelperExportFact, TypeScriptHelperKind,
 };
-use wakaru_core::{rules::UnForOf, validate_output_modules, OutputFindingKind, RewriteLevel};
+use wakaru_core::{
+    decompile, rules::UnForOf, validate_output_modules, DecompileOptions, OutputFindingKind,
+    RewriteLevel,
+};
 
 fn apply_with_level(input: &str, level: RewriteLevel) -> String {
     render_rule(input, |mark| UnForOf::new_with_mark(mark, level))
@@ -1187,6 +1190,48 @@ for (let [, value] of entries) {
 }
 "#;
     assert_eq_normalized(&render(input), expected);
+}
+
+#[test]
+fn discarded_index_hole_fold_preserves_const_write_errors() {
+    for write in ["value = next();", "out[value = next()] = true;"] {
+        let input = format!(
+            r#"
+for (const pair of entries) {{
+  pair[0];
+  const value = pair[1];
+  {write}
+}}
+"#
+        );
+        assert_eq_normalized(&apply_with_level(&input, RewriteLevel::Standard), &input);
+    }
+}
+
+#[test]
+fn discarded_index_hole_drops_slot_type_annotation() {
+    let input = r#"
+for (const pair of entries) {
+  pair[0];
+  const value: string = pair[1];
+  use(value);
+}
+"#;
+    let expected = r#"
+for (const [, value] of entries) {
+  use(value);
+}
+"#;
+    let output = decompile(
+        input,
+        DecompileOptions {
+            filename: "fixture.ts".to_string(),
+            ..Default::default()
+        },
+    )
+    .expect("TypeScript input should decompile")
+    .code;
+    assert_eq_normalized(&output, expected);
 }
 
 #[test]

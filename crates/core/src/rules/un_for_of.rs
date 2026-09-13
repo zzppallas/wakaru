@@ -2109,11 +2109,7 @@ fn extract_loop_element(stmts: &[Stmt], access_obj: &Expr, idx_sym: &Atom) -> Op
 }
 
 enum IndexSlot {
-    Binding {
-        ident: Ident,
-        type_ann: Option<Box<swc_core::ecma::ast::TsTypeAnn>>,
-        kind: VarDeclKind,
-    },
+    Binding { ident: Ident, kind: VarDeclKind },
     Hole,
 }
 
@@ -2141,12 +2137,13 @@ fn consume_index_slots(stmts: &[Stmt], temp: &Ident) -> ConsumedIndexSlots {
         match slot {
             IndexSlot::Binding {
                 ident,
-                type_ann,
                 kind: slot_kind,
             } => {
                 elems.push(Some(Pat::Ident(BindingIdent {
                     id: ident.clone(),
-                    type_ann,
+                    // A declaration-level TypeScript annotation is not valid
+                    // on an individual ArrayPat element.
+                    type_ann: None,
                 })));
                 bindings.push(ident);
                 kind = join_recovered_binding_kind(kind, slot_kind);
@@ -2195,7 +2192,6 @@ fn take_index_slot(stmt: &Stmt, temp: &Ident, expected: f64) -> Option<IndexSlot
         }
         return Some(IndexSlot::Binding {
             ident: binding.id.clone(),
-            type_ann: binding.type_ann.clone(),
             kind: decl.kind,
         });
     }
@@ -2378,6 +2374,9 @@ fn try_fold_for_of_entry_slots(for_of: &mut ForOfStmt, helper_context: &ForOfHel
     }
 
     let body_uses = BindingUseIndex::collect_stmts(&remaining);
+    if writes_consumed_const(&body.stmts[..consumed], &body_uses) {
+        return;
+    }
     let is_reassigned = bindings
         .iter()
         .any(|id| body_uses.has_direct_write(&id.to_id()));
