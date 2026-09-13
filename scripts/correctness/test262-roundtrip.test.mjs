@@ -866,14 +866,16 @@ test("knownWakaruParseUnsupportedReason classifies SWC parser gaps", () => {
   );
 });
 
-test("knownSwcFidelityIssueReason classifies array binding elision printer gaps", () => {
+test("knownSwcFidelityIssueReason classifies arrow parameter elision gaps only", () => {
+  // Assignment-pattern elisions round-trip since swc_ecma_parser 45.1.2, so
+  // those shapes must not be reclassified as a known swc gap.
   assert.equal(
     knownSwcFidelityIssueReason({
       path: "test/language/statements/for-of/dstr/array-iteration.js",
       error: new Error("Test262Error"),
       decompiled: "for ([] of [g()]) {}",
     }),
-    "swc-array-binding-elision",
+    null,
   );
   assert.equal(
     knownSwcFidelityIssueReason({
@@ -881,7 +883,7 @@ test("knownSwcFidelityIssueReason classifies array binding elision printer gaps"
       error: new Error("Test262Error"),
       decompiled: "for await ([] of [iterable]) {}",
     }),
-    "swc-array-binding-elision",
+    null,
   );
   assert.equal(
     knownSwcFidelityIssueReason({
@@ -889,7 +891,7 @@ test("knownSwcFidelityIssueReason classifies array binding elision printer gaps"
       error: new Error("Test262Error"),
       decompiled: "[x] = iterable;",
     }),
-    "swc-array-binding-elision",
+    null,
   );
   assert.equal(
     knownSwcFidelityIssueReason({
@@ -897,7 +899,7 @@ test("knownSwcFidelityIssueReason classifies array binding elision printer gaps"
       error: new Error("Test262Error"),
       decompiled: "result = vals;\n[] = vals;",
     }),
-    "swc-array-binding-elision",
+    null,
   );
   assert.equal(
     knownSwcFidelityIssueReason({

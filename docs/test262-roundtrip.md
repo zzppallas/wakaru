@@ -308,8 +308,11 @@ Treat baseline movement as follows:
 ## Stats
 
 `scripts/correctness/test262-stats.json` caches the current baseline totals so
-other sessions can read them without regenerating all summaries. Update after
-baseline changes:
+other sessions can read them without regenerating all summaries. The passing
+total is also cited in `README.md` and the docs-site Correctness page
+(`docs-site/content/docs/project/correctness.mdx`); `--check` does not verify
+those, so update them by hand in the same commit. Update after baseline
+changes:
 
 ```powershell
 node scripts\correctness\test262-collect-stats.mjs                               # update all
