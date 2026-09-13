@@ -93,25 +93,6 @@ jobs:
           cargo +nightly-2026-03-20 check-external-types
           --manifest-path crates/wakaru/Cargo.toml
 
-  windows-arm64-cli:
-    # Temporary tripwire: the CLI's mimalloc dependency is compiled from C, and
-    # the release matrix cross-builds aarch64-pc-windows-msvc on an x64 runner.
-    # `cargo check` still runs the build script, so this proves the ARM64 MSVC
-    # toolchain is reachable before a tag depends on it. Remove after one green
-    # run.
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - name: Install pinned Rust toolchain
-        run: rustc --version
-      - name: Add Windows ARM64 target
-        run: rustup target add aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
-      - name: Check the CLI for aarch64-pc-windows-msvc
-        run: cargo check -p wakaru-cli --target aarch64-pc-windows-msvc
-
   wasm:
     # The playground deploy (playground.yml) is the only place the wasm crate
     # is built for its real target, and it runs post-merge; this catches a
